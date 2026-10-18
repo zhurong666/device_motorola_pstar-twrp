@@ -1,0 +1,85 @@
+name: Build TWRP for pstar
+
+on:
+  workflow_dispatch:
+    inputs:
+      MANIFEST_BRANCH:
+        description: 'Manifest branch'
+        required: true
+        default: 'twrp-12.1'
+      DEVICE_TREE_BRANCH:
+        description: 'Device tree branch'
+        required: true
+        default: 'android-12.1'
+      BUILD_TARGET:
+        description: 'Build target (boot / recovery / vendorboot)'
+        required: true
+        default: 'boot'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 5120
+          swap-size-mb: 8192
+          remove-dotnet: true
+          remove-android: true
+          remove-haskell: true
+          remove-codeql: true
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '11'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-core gnupg flex bison gperf build-essential zip curl zlib1g-dev libc6-dev-i386 libncurses5 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig python3
+
+      - name: Initialize repo
+        run: |
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Repo init & sync
+        run: |
+          mkdir workspace
+          cd workspace
+          repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.MANIFEST_BRANCH }}
+          repo sync -c --no-clone-bundle --no-tags -j$(nproc --all)
+
+      - name: Clone device tree
+        run: |
+          cd workspace
+          git clone ${{ github.repositoryUrl }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} device/motorola/pstar
+
+      - name: Build TWRP
+        run: |
+          cd workspace
+          source build/envsetup.sh
+          export ALLOW_MISSING_DEPENDENCIES=true
+          lunch twrp_pstar-eng
+          mka ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TWRP-pstar-${{ github.run_number }}
+          path: |
+            workspace/out/target/product/pstar/boot.img
+            workspace/out/target/product/pstar/recovery.img
+            workspace/out/target/product/pstar/vendor_boot.img
+          if-no-files-found: warn
